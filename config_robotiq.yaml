@@ -1,0 +1,149 @@
+# config_robotiq.yaml - Robotiq 2F-85 夹爪训练配置（最终方案）
+#
+# 设计要点：
+# 1) 最终 success 固定为 lift+稳定保持（不随课程变化）
+# 2) curriculum 只做 shaping 门控/权重调度 + 难度自动提升
+# 3) shaping 奖励采用“事件/进步量/增量”形式，避免刷分
+
+# ============================================================
+# 基础参数
+# ============================================================
+seed: 42
+
+# ============================================================
+# SAC 模型参数
+# ============================================================
+model_params:
+  learning_rate: 0.0003
+  buffer_size: 1000000        # 建议 >= 1e6，避免成功经验被覆盖
+  batch_size: 256
+  gamma: 0.99
+  tau: 0.005
+  ent_coef: "auto"           # 推荐 auto（也可固定较小值 0.02-0.05）
+
+# ============================================================
+# 训练参数
+# ============================================================
+train_params:
+  total_timesteps: 2000000
+  num_envs: 8
+
+# ============================================================
+# 环境参数
+# ============================================================
+env:
+  name: "robotiq"
+  model_path: "mujoco_menagerie/robotiq_2f85/grasping_scene.xml"
+  max_episode_steps: 200
+  physics_steps_per_action: 10
+  render_mode: 'None'
+
+# ============================================================
+# 控制参数
+# ============================================================
+control:
+  position_scale: 0.01
+  gripper_max_delta: 20.0
+
+  # mocap workspace clamp（重要：z_min 必须 >= 桌面高度 0.30m + margin）
+  z_table_margin: 0.01
+  z_min: 0.33
+  z_max: 0.6
+
+  # x/y 默认会按桌子大小自动 clamp（table_top size=0.3），也可以显式指定：
+  # x_min: -0.30
+  # x_max: 0.30
+  # y_min: -0.30
+  # y_max: 0.30
+
+# ============================================================
+# VecNormalize 配置（推荐：只归一化观测，不归一化 reward）
+# ============================================================
+vecnormalize:
+  norm_obs: true
+  norm_reward: false
+  clip_obs: 10.0
+
+# ============================================================
+# 策略网络配置
+# ============================================================
+policy_kwargs:
+  net_arch: [256, 256]
+
+# ============================================================
+# 回调配置
+# ============================================================
+callbacks:
+  checkpoint_freq: 50000
+  log_interval: 10
+
+# ============================================================
+# 奖励权重（robotiq_env.py 会在 curriculum 中做倍率调度）
+# 注意：本环境中 distance/near/contact/grasp/lift 都是事件/进步量/增量奖励
+# ============================================================
+reward_weights:
+  distance: 1.0
+  near_object: 2.0
+  grasp_guidance: 1.0
+  single_contact: 5.0
+  both_contact: 20.0
+  lift: 300.0
+  success: 200.0
+
+  time_penalty: -0.01
+  drop_penalty: -50.0
+
+  # 关键：防止“压桌刷分 / 趴桌”
+  table_contact_penalty: -0.5
+
+  # 越界惩罚（mocap 会被 clamp，仍可用于抑制贴边）
+  out_of_bounds_penalty: -10.0
+
+# ============================================================
+# Reward shaping 参数
+# ============================================================
+reward_params:
+  dist_alpha: 5.0
+  near_threshold: 0.15
+  align_xy_thresh: 0.03
+  align_z_thresh: 0.05
+
+# ============================================================
+# 最终成功条件（固定，不随课程变化）
+# ============================================================
+success_criteria:
+  min_lift_height: 0.02
+  require_both_contact: true
+  hold_steps: 10
+
+# ============================================================
+# 课程学习（enabled=true）
+# - update_every_steps: callback 注入 progress 的频率
+# - auto_difficulty: 是否随 progress 自动提升 reset 难度
+# - phase_bins: progress 区间（用于 env 内 reward 门控/倍率）
+# ============================================================
+curriculum:
+  enabled: true
+  update_every_steps: 500
+  auto_difficulty: true
+  phase_bins:
+    approach: [0.0, 0.25]
+    contact:  [0.25, 0.50]
+    grasp:    [0.50, 0.75]
+    lift:     [0.75, 1.01]
+
+# ============================================================
+# 物理参数（如果你在 XML/代码里会读取）
+# ============================================================
+physics:
+  pad_friction: 1.5
+  actuator_force_range: 20
+  object_mass: 0.05
+
+# ============================================================
+# 模型保存路径
+# ============================================================
+paths:
+  model_dir: "./models/robotiq_curriculum/"
+  log_dir: "./logs/robotiq_curriculum/"
+  checkpoint_prefix: "sac_robotiq"

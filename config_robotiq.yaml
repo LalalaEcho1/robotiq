@@ -37,6 +37,7 @@ env:
   max_episode_steps: 200
   physics_steps_per_action: 10
   render_mode: 'None'
+  object_id: 12  # 指定物体编号 (0-87), 或 "random" 随机选择
 
 # ============================================================
 # 控制参数

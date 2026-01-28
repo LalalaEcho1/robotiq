@@ -28,13 +28,16 @@
     <mesh class="2f85" file="pad.stl"/>
     <mesh class="2f85" file="silicone_pad.stl"/>
     <mesh class="2f85" file="spring_link.stl"/>
-    
+
     <!-- 场景材质 -->
     <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072"/>
     <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3"
       markrgb="0.8 0.8 0.8" width="300" height="300"/>
     <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
     <material name="target_mat" rgba="0.8 0.2 0.2 1"/>
+
+    <!-- 目标物体 mesh (动态加载时会替换路径) -->
+    <mesh name="target_mesh" file="object_meshes/000/mesh.obj" scale="1 1 1"/>
   </asset>
 
   <default>
@@ -80,19 +83,19 @@
     <light pos="0 0 1.5"/>
     <light pos="0 -0.3 1" dir="0 0.2 -0.8" directional="true"/>
     <geom name="floor" size="0 0 0.05" type="plane" material="groundplane"/>
-    
+
     <!-- Mocap目标位置 (不可见的控制点) -->
     <body name="hand_mocap" pos="0 0 0.5" quat="0 1 0 0" mocap="true">
       <geom type="sphere" size="0.01" rgba="1 0 0 0.3" contype="0" conaffinity="0"/>
     </body>
-    
+
     <!-- 可移动的夹爪基座 (用freejoint实现物理移动，通过weld约束跟随mocap) -->
     <!-- 初始位置: z=0.5 在物体上方 -->
     <!-- quat="0 1 0 0" 表示绕X轴旋转180度，使夹爪朝下 -->
     <body name="gripper_base" pos="0 0 0.5" quat="0 1 0 0">
       <freejoint name="gripper_joint"/>
       <inertial pos="0 0 0" mass="2.0" diaginertia="0.01 0.01 0.01"/>
-      
+
       <!-- Robotiq 2F-85 夹爪结构 (从2f85.xml复制) -->
       <body name="base_mount" pos="0 0 0.007" childclass="2f85">
         <geom class="visual" mesh="base_mount" material="black"/>
@@ -103,7 +106,7 @@
           <geom class="visual" mesh="base" material="black"/>
           <geom class="collision" mesh="base"/>
           <site name="pinch" pos="0 0 0.145" type="sphere" group="5" rgba="0.9 0.9 0.9 1" size="0.005"/>
-          
+
           <!-- Right-hand side 4-bar linkage -->
           <body name="right_driver" pos="0 0.0306011 0.054904">
             <inertial mass="0.00899563" pos="2.96931e-12 0.0177547 0.00107314" quat="0.681301 0.732003 0 0"
@@ -143,7 +146,7 @@
               </body>
             </body>
           </body>
-          
+
           <!-- Left-hand side 4-bar linkage -->
           <body name="left_driver" pos="0 -0.0306011 0.054904" quat="0 0 0 1">
             <inertial mass="0.00899563" pos="0 0.0177547 0.00107314" quat="0.681301 0.732003 0 0"
@@ -186,19 +189,18 @@
         </body>
       </body>
     </body>
-    
+
     <!-- 桌子 (带碰撞) -->
     <body name="table" pos="0 0 0.15">
-      <geom name="table_top" type="box" size="0.3 0.3 0.15" rgba="0.4 0.3 0.2 1" 
+      <geom name="table_top" type="box" size="0.3 0.3 0.15" rgba="0.4 0.3 0.2 1"
             friction="0.8 0.02 0.01" contype="1" conaffinity="1"/>
     </body>
-    
-    <!-- 目标物体 (小立方体，放在桌子上) -->
-    <!-- 桌面高度 0.3m, 物体半高 0.02m, 所以物体中心在 z=0.32m -->
-    <!-- 物体在桌子中心略偏移 -->
-    <body name="target_object" pos="0 0 0.32">
+
+    <!-- 目标物体 (使用 mesh，放在桌子上) -->
+    <!-- 桌面高度 0.3m，物体中心根据 mesh 大小调整 -->
+    <body name="target_object" pos="0 0 0.35">
       <freejoint name="target_joint"/>
-      <geom name="target_geom" type="box" size="0.02 0.02 0.02" mass="0.05" 
+      <geom name="target_geom" type="mesh" mesh="target_mesh" mass="0.05"
             material="target_mat" friction="0.7 0.02 0.01" contype="1" conaffinity="1"/>
     </body>
   </worldbody>

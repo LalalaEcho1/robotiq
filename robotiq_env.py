@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import os
 from collections import deque
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple, Optional, Union
 
 import numpy as np
 import mujoco
@@ -42,6 +42,7 @@ class Robotiq2F85Env(gym.Env):
         render_every: int = 1,
         max_episode_steps: int = 200,
         config: Optional[dict] = None,
+        object_id: Union[str, int] = "random",  # "random" 或 0-87
     ):
         super().__init__()
 
@@ -49,6 +50,11 @@ class Robotiq2F85Env(gym.Env):
         self.render_mode = render_mode
         self.render_every = int(render_every)
         self._render_counter = 0
+
+        # 物体配置
+        self.object_id = object_id
+        self.num_objects = 88  # 可用物体数量 (000-087)
+        self.current_object_id = 0  # 当前加载的物体 ID
 
         # RNG
         seed = int(self.config.get("seed", 0)) if isinstance(self.config, dict) else 0
@@ -63,59 +69,7 @@ class Robotiq2F85Env(gym.Env):
         self.max_episode_steps = int(env_cfg.get("max_episode_steps", max_episode_steps))
 
         # ---- Cache IDs ----
-        def safe_name2id(objtype, name: str) -> int:
-            try:
-                return int(mujoco.mj_name2id(self.model, objtype, name))
-            except Exception:
-                return -1
-
-        # joints
-        self.right_driver_joint = safe_name2id(mujoco.mjtObj.mjOBJ_JOINT, "right_driver_joint")
-        self.left_driver_joint = safe_name2id(mujoco.mjtObj.mjOBJ_JOINT, "left_driver_joint")
-
-        # bodies
-        self.target_body_id = safe_name2id(mujoco.mjtObj.mjOBJ_BODY, "target_object")
-        self.table_body_id = safe_name2id(mujoco.mjtObj.mjOBJ_BODY, "table")
-        self.gripper_base_id = safe_name2id(mujoco.mjtObj.mjOBJ_BODY, "gripper_base")
-        self.right_pad_body = safe_name2id(mujoco.mjtObj.mjOBJ_BODY, "right_pad")
-        self.left_pad_body = safe_name2id(mujoco.mjtObj.mjOBJ_BODY, "left_pad")
-
-        # geoms
-        self.target_geom_id = safe_name2id(mujoco.mjtObj.mjOBJ_GEOM, "target_geom")
-        self.table_geom_id = safe_name2id(mujoco.mjtObj.mjOBJ_GEOM, "table_top")
-
-        # sites
-        self.pinch_site_id = safe_name2id(mujoco.mjtObj.mjOBJ_SITE, "pinch")
-
-        # mocap body
-        hand_mocap_body_id = safe_name2id(mujoco.mjtObj.mjOBJ_BODY, "hand_mocap")
-        if hand_mocap_body_id >= 0:
-            self.gripper_mocap_id = int(self.model.body_mocapid[hand_mocap_body_id])
-        else:
-            self.gripper_mocap_id = -1
-
-        # qpos indices
-        self.gripper_qpos_start = None
-        gripper_joint_id = safe_name2id(mujoco.mjtObj.mjOBJ_JOINT, "gripper_joint")
-        if gripper_joint_id >= 0:
-            self.gripper_qpos_start = int(self.model.jnt_qposadr[gripper_joint_id])
-            self.gripper_dof_start = int(self.model.jnt_dofadr[gripper_joint_id])
-        else:
-            self.gripper_dof_start = None
-
-        self.target_qpos_start = None
-        target_joint_id = safe_name2id(mujoco.mjtObj.mjOBJ_JOINT, "target_joint")
-        if target_joint_id >= 0:
-            self.target_qpos_start = int(self.model.jnt_qposadr[target_joint_id])
-
-        # driver qpos
-        self.right_driver_qpos = int(self.model.jnt_qposadr[self.right_driver_joint]) if self.right_driver_joint >= 0 else None
-        self.left_driver_qpos = int(self.model.jnt_qposadr[self.left_driver_joint]) if self.left_driver_joint >= 0 else None
-
-        # ---- Table/object geometry derived constants ----
-        mujoco.mj_forward(self.model, self.data)
-        self.table_top_z = self._compute_table_top_z()
-        self.object_half_z = float(self.model.geom_size[self.target_geom_id][2]) if self.target_geom_id >= 0 else 0.02
+        self._cache_ids()
 
         # ---- Control config ----
         control_cfg = self.config.get("control", {})
@@ -229,13 +183,25 @@ class Robotiq2F85Env(gym.Env):
     # Model loading / geometry utils
     # ---------------------------------------------------------------------
 
-    def _load_model_from_config(self, config: dict) -> Tuple[mujoco.MjModel, mujoco.MjData]:
-        """Load MuJoCo model path.
+    def _load_model_from_config(self, config: dict, object_id: int = None) -> Tuple[mujoco.MjModel, mujoco.MjData]:
+        """Load MuJoCo model with specified object mesh.
 
         Priority:
         1) config['env']['model_path'] if exists
         2) default: ../mujoco_menagerie/robotiq_2f85/grasping_scene.xml
+
+        Args:
+            config: 配置字典
+            object_id: 物体 ID (0-87)，如果为 None 则根据 self.object_id 决定
         """
+        # 确定物体 ID
+        if object_id is None:
+            if self.object_id == "random" :
+                object_id = int(self.np_random.randint(0, self.num_objects))
+            else:
+                object_id = int(self.object_id)
+        self.current_object_id = object_id
+
         env_cfg = config.get("env", {}) if isinstance(config, dict) else {}
         model_path_cfg = env_cfg.get("model_path", None)
 
@@ -265,9 +231,105 @@ class Robotiq2F85Env(gym.Env):
                 "Please set config['env']['model_path'] correctly."
             )
 
-        model = mujoco.MjModel.from_xml_path(model_path)
+        # 读取 XML 并替换物体 mesh 路径
+        with open(model_path, 'r') as f:
+            xml_string = f.read()
+
+        # 首先将 meshdir 改为绝对路径（from_xml_string 需要）
+        model_dir = os.path.dirname(model_path)
+        assets_dir = os.path.join(model_dir, "assets")
+        xml_string = xml_string.replace(
+            'meshdir="assets"',
+            f'meshdir="{assets_dir}"'
+        )
+
+        # 替换默认的 000 为指定的物体 ID
+        xml_string = xml_string.replace(
+            'file="object_meshes/000/mesh.obj"',
+            f'file="object_meshes/{object_id:03d}/mesh.obj"'
+        )
+
+        model = mujoco.MjModel.from_xml_string(xml_string)
         data = mujoco.MjData(model)
         return model, data
+
+    def _cache_ids(self):
+        """缓存模型中各种对象的 ID（加载模型后调用）"""
+        def safe_name2id(objtype, name: str) -> int:
+            try:
+                return int(mujoco.mj_name2id(self.model, objtype, name))
+            except Exception:
+                return -1
+
+        # joints
+        self.right_driver_joint = safe_name2id(mujoco.mjtObj.mjOBJ_JOINT, "right_driver_joint")
+        self.left_driver_joint = safe_name2id(mujoco.mjtObj.mjOBJ_JOINT, "left_driver_joint")
+
+        # bodies
+        self.target_body_id = safe_name2id(mujoco.mjtObj.mjOBJ_BODY, "target_object")
+        self.table_body_id = safe_name2id(mujoco.mjtObj.mjOBJ_BODY, "table")
+        self.gripper_base_id = safe_name2id(mujoco.mjtObj.mjOBJ_BODY, "gripper_base")
+        self.right_pad_body = safe_name2id(mujoco.mjtObj.mjOBJ_BODY, "right_pad")
+        self.left_pad_body = safe_name2id(mujoco.mjtObj.mjOBJ_BODY, "left_pad")
+
+        # geoms
+        self.target_geom_id = safe_name2id(mujoco.mjtObj.mjOBJ_GEOM, "target_geom")
+        self.table_geom_id = safe_name2id(mujoco.mjtObj.mjOBJ_GEOM, "table_top")
+
+        # sites
+        self.pinch_site_id = safe_name2id(mujoco.mjtObj.mjOBJ_SITE, "pinch")
+
+        # mocap body
+        hand_mocap_body_id = safe_name2id(mujoco.mjtObj.mjOBJ_BODY, "hand_mocap")
+        if hand_mocap_body_id >= 0:
+            self.gripper_mocap_id = int(self.model.body_mocapid[hand_mocap_body_id])
+        else:
+            self.gripper_mocap_id = -1
+
+        # qpos indices
+        self.gripper_qpos_start = None
+        gripper_joint_id = safe_name2id(mujoco.mjtObj.mjOBJ_JOINT, "gripper_joint")
+        if gripper_joint_id >= 0:
+            self.gripper_qpos_start = int(self.model.jnt_qposadr[gripper_joint_id])
+            self.gripper_dof_start = int(self.model.jnt_dofadr[gripper_joint_id])
+        else:
+            self.gripper_dof_start = None
+
+        self.target_qpos_start = None
+        target_joint_id = safe_name2id(mujoco.mjtObj.mjOBJ_JOINT, "target_joint")
+        if target_joint_id >= 0:
+            self.target_qpos_start = int(self.model.jnt_qposadr[target_joint_id])
+
+        # driver qpos
+        self.right_driver_qpos = int(self.model.jnt_qposadr[self.right_driver_joint]) if self.right_driver_joint >= 0 else None
+        self.left_driver_qpos = int(self.model.jnt_qposadr[self.left_driver_joint]) if self.left_driver_joint >= 0 else None
+
+        # ---- Table/object geometry derived constants ----
+        mujoco.mj_forward(self.model, self.data)
+        self.table_top_z = self._compute_table_top_z()
+        # 对于 mesh 类型，geom_size 可能不适用，使用 AABB 或固定值
+        if self.target_geom_id >= 0:
+            geom_type = self.model.geom_type[self.target_geom_id]
+            if geom_type == mujoco.mjtGeom.mjGEOM_MESH:
+                # mesh 类型，使用固定估计值或从 mesh 数据计算
+                self.object_half_z = 0.05  # 默认估计值
+            else:
+                self.object_half_z = float(self.model.geom_size[self.target_geom_id][2])
+        else:
+            self.object_half_z = 0.02
+
+    def set_object(self, object_id: int):
+        """手动切换物体并重新加载模型"""
+        self.object_id = int(object_id)
+        self.model, self.data = self._load_model_from_config(self.config, object_id=object_id)
+        self._cache_ids()
+        # 关闭旧的 viewer
+        if hasattr(self, 'viewer') and self.viewer is not None:
+            try:
+                self.viewer.close()
+            except Exception:
+                pass
+            self.viewer = None
 
     def _compute_table_top_z(self) -> float:
         if self.table_body_id < 0:
@@ -766,6 +828,7 @@ class Robotiq2F85Env(gym.Env):
             "left_table_contact": bool(left_table),
             "right_table_contact": bool(right_table),
             "success_hold": int(self.success_hold),
+            "gripper_ctrl": float(self.current_gripper_ctrl),
             # reward components (方便 TensorBoard 分解)
             "reward_dist": float(dist_rew),
             "reward_near": float(near_rew),

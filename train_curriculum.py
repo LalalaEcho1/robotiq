@@ -154,7 +154,8 @@ def make_env(config: Dict[str, Any], render_mode: str = "None"):
     def _init():
         env_cfg = config.get("env", {})
         max_episode_steps = int(env_cfg.get("max_episode_steps", 200))
-        env = Robotiq2F85Env(render_mode=render_mode, max_episode_steps=max_episode_steps, config=config)
+        object_id = env_cfg.get("object_id", "random")  # 从配置读取物体编号
+        env = Robotiq2F85Env(render_mode=render_mode, max_episode_steps=max_episode_steps, config=config, object_id=object_id)
         env = Monitor(env)
         return env
 
